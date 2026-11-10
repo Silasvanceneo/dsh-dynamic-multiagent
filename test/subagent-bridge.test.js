@@ -63,9 +63,11 @@ test('host bridge maps a graph node to a provider request and persists child lif
   assert.equal(result.stopReason, 'completed');
   assert.equal(result.childId, 'child-1');
   assert.equal(subagents.requests[0].parent.id, 'parent-agent');
-  assert.deepEqual(subagents.requests[0].agentOptions, { provider: 'lab', model: 'coder' });
+  // Advanced connections are served by the plugin's own adapter under the `dma-` route prefix.
+  assert.deepEqual(subagents.requests[0].agentOptions, { provider: 'dma-lab', model: 'coder' });
   assert.deepEqual(subagents.requests[0].toolFilter, { allow: ['read'] });
   assert.match(subagents.requests[0].prompt[0].text, /Implement the bounded change/);
+  assert.doesNotMatch(subagents.requests[0].prompt[0].text, /You are the Leader/);
   assert.deepEqual(seen.map((event) => event.type), ['child-start', 'child-published', 'child-settled']);
 });
 

@@ -70,7 +70,7 @@ test('derived role cannot widen write or delegation permissions', () => {
 
 test('prompt assembly contains only the active stage', () => {
   const prompt = assembleSystemPrompt({ roleId: 'planner', stage: 'planning', modelRef: 'openai:coder', task: { objective: 'plan a task', acceptance: ['valid DAG'] } });
-  assert.match(prompt, /fixed Leader/);
+  assert.match(prompt, /You are the Leader of this conversation/);
   assert.match(prompt, /structured collaboration plan/);
   assert.doesNotMatch(prompt, /Execute only nodes whose dependencies are complete/);
 });

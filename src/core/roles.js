@@ -21,15 +21,44 @@ export const BUILTIN_ROLES = Object.freeze({
   'plan-reviewer': role('plan-reviewer', 'Checks a plan for completeness, executability, and evidence.', ['read', 'plan-review'], ['plan-reviewer']),
   'architecture-consultant': role('architecture-consultant', 'Advises on architecture trade-offs and complex diagnosis.', ['read', 'architecture'], ['architecture-consultant']),
   explore: role('explore', 'Searches the project and maps implementation evidence.', ['read', 'search'], ['explore']),
-  librarian: role('librarian', 'Researches documentation and reference implementations.', ['read', 'research'], ['librarian']),
+  librarian: role('librarian', 'Researches documentation and reference implementations.', ['read', 'search', 'research'], ['librarian']),
   'multimodal-looker': role('multimodal-looker', 'Interprets images and supported media with evidence.', ['read', 'media'], ['multimodal-looker']),
-  worker: role('worker', 'Completes one bounded task under a role and category contract.', ['read', 'write-assigned'], ['worker']),
-  'deep-worker': role('deep-worker', 'Explores, implements, and checks a complex target autonomously.', ['read', 'write-assigned'], ['deep-worker']),
+  worker: role('worker', 'Completes one bounded task under a role and category contract.', ['read', 'research', 'write-assigned'], ['worker']),
+  'deep-worker': role('deep-worker', 'Explores, implements, and checks a complex target autonomously.', ['read', 'research', 'write-assigned'], ['deep-worker']),
   'team-lead': role('team-lead', 'Coordinates an authorized subgraph and reports its combined result.', ['read', 'delegate-subgraph'], ['team-lead']),
   'code-reviewer': role('code-reviewer', 'Reviews changes for correctness, risk, and maintainability.', ['read', 'review'], ['code-reviewer']),
-  'qa-executor': role('qa-executor', 'Runs tests and real behavior checks without changing product code.', ['read', 'test-artifacts'], ['qa-executor']),
+  'qa-executor': role('qa-executor', 'Runs tests and real behavior checks without changing product code.', ['read', 'search', 'test-artifacts'], ['qa-executor']),
   'gate-reviewer': role('gate-reviewer', 'Determines whether final completion conditions and evidence are met.', ['read', 'review'], ['gate-reviewer']),
 });
+
+// Role permissions are abstract capabilities; children receive the matching real dsh tool names.
+// Names a deployment does not compose are filtered out before the allowlist reaches the host.
+export const HOST_TOOLSETS = Object.freeze({
+  read: ['read', 'read_image', 'glob', 'grep', 'skill'],
+  search: ['glob', 'grep'],
+  research: ['web_search', 'web_fetch'],
+  media: ['read_image'],
+  'write-assigned': ['write', 'edit', 'bash', 'pwsh'],
+  'private-write': ['write', 'edit', 'bash', 'pwsh'],
+  'test-artifacts': ['bash', 'pwsh'],
+  'delegate-subgraph': ['subagent'],
+  orchestrate: [],
+  plan: [],
+  'plan-review': [],
+  architecture: [],
+  review: [],
+});
+
+/** Real tool names a role may use (capabilities expanded, literal tool names kept). */
+export function resolveRoleTools(role) {
+  const names = new Set();
+  for (const entry of role?.tools ?? []) {
+    const expanded = HOST_TOOLSETS[entry];
+    if (expanded) for (const name of expanded) names.add(name);
+    else names.add(entry);
+  }
+  return [...names];
+}
 
 export class RoleRegistry {
   constructor({ roles = BUILTIN_ROLES, availableSkills = [], knownTools = [] } = {}) {
@@ -158,7 +187,8 @@ function normalizeDelegation(value, path) {
 }
 
 function validateInheritance(base, derived, { knownTools, availableSkills }) {
-  if (!derived.tools.every((tool) => (base.tools ?? []).includes(tool))) throw new DynamicMultiagentError('role-permission-widening', `Derived role "${derived.id}" requests a tool outside base role "${base.id}"`);
+  const baseTools = new Set([...(base.tools ?? []), ...resolveRoleTools(base)]);
+  if (!derived.tools.every((tool) => baseTools.has(tool))) throw new DynamicMultiagentError('role-permission-widening', `Derived role "${derived.id}" requests a tool outside base role "${base.id}"`);
   if (!derived.workspace.write && base.workspace?.write) {
     // Narrowing is safe; a derived role may be read-only.
   }

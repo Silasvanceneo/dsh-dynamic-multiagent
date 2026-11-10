@@ -1,9 +1,11 @@
 import { join, resolve } from 'node:path';
-import { ConfigStore, DEFAULT_CONFIG } from './config-store.js';
+import { ConfigStore, DEFAULT_CONFIG, redactConfig } from './config-store.js';
 import { DynamicMultiagentError, asDynamicError } from './errors.js';
 import { ModelDirectory } from './model-router.js';
-import { assembleSystemPrompt, createPromptAssemblyRecord } from './prompt.js';
-import { RoleRegistry, BUILTIN_ROLES, TASK_CATEGORIES } from './roles.js';
+import { assembleChildPrompt, assembleSystemPrompt, createPromptAssemblyRecord, LEADER_BASE_PROMPT, PROMPT_TEMPLATE_VERSION } from './prompt.js';
+import { RoleRegistry, BUILTIN_ROLES, TASK_CATEGORIES, resolveRoleTools } from './roles.js';
+import { SessionSwitchStore } from './session-switch.js';
+import { suggestThinking } from './thinking.js';
 import { SkillRegistry } from './skills.js';
 import { TaskGraph, validatePlan } from './task-graph.js';
 import { RunStore } from './run-store.js';
@@ -37,14 +39,21 @@ export class DynamicMultiagentRuntime {
     });
     this.connections = new ProtocolConnectionManager({ connections: config.connections ?? [], credentialResolver, fetchImpl, logger });
     this.workspace = new WorkspaceManager({ dataDir: join(this.dataDir, 'workspaces'), logger });
+    this.sessionSwitches = new SessionSwitchStore(join(this.dataDir, 'sessions.json'));
     this.activeRuns = new Map();
     this.closed = false;
+    this.config = undefined;
+    this.listeners = new Set();
+    this.hostCatalogSource = undefined;
+    this.knownTools = undefined;
   }
 
   async initialize() {
     const config = await this.configStore.load();
+    this.config = config;
     this.modelDirectory.set(config);
     this.connections.setConnections(config.connections);
+    await this.sessionSwitches.load();
     this.skills.localRoots = config.skillSources.localRoots.map(resolve);
     this.skills.gitRepos = config.skillSources.gitRepos.map((repo) => ({ ...repo }));
     this.skills.autoInstall = config.skillSources.autoInstall;
@@ -57,29 +66,190 @@ export class DynamicMultiagentRuntime {
   snapshot() {
     return {
       dataDir: this.dataDir,
+      enabled: this.config?.enabled ?? true,
       models: this.modelDirectory.list(),
-      roles: this.roles.list(),
+      roles: this.roles.list().map((role) => ({ ...role, hostTools: this.filterKnownTools(resolveRoleTools(role)) })),
       categories: cloneJson(TASK_CATEGORIES),
       skills: this.skills.list(),
       closed: this.closed,
     };
   }
 
+  /** Compact catalog for the model: what it may put into a plan. */
+  modelCatalog() {
+    const defaults = this.modelDirectory.defaults;
+    return {
+      models: this.modelDirectory.list().filter((model) => model.available !== false).map((model) => ({
+        ref: model.ref,
+        ...(model.label ? { label: model.label } : {}),
+        ...(model.capabilities.length ? { capabilities: model.capabilities } : {}),
+        ...(model.efforts?.length ? { efforts: model.efforts } : {}),
+      })),
+      defaults: {
+        ...(defaults.leader ? { leader: defaults.leader } : {}),
+        roles: defaults.roles,
+        categories: defaults.categories,
+        roleEfforts: defaults.roleEfforts,
+        categoryEfforts: defaults.categoryEfforts,
+      },
+      roles: this.roles.list().map((role) => ({ id: role.id, description: role.description, writes: Boolean(role.workspace?.write), tools: this.filterKnownTools(resolveRoleTools(role)) })),
+      categories: Object.fromEntries(Object.entries(TASK_CATEGORIES).map(([id, value]) => [id, value.description])),
+      skills: this.skills.list().map((skill) => ({ id: skill.id, ...(skill.summary ? { summary: skill.summary } : {}) })),
+      modelNote: this.modelDirectory.list().length ? undefined : 'No models are configured: leave "model" empty and every child inherits your model.',
+    };
+  }
+
+  filterKnownTools(tools) {
+    return this.knownTools ? tools.filter((tool) => this.knownTools.has(tool)) : tools;
+  }
+
+  setKnownTools(names) {
+    this.knownTools = names ? new Set(names) : undefined;
+  }
+
+  /** Install a function returning the host model catalog (used for effort validation and the UI). */
+  setHostCatalogSource(source) {
+    this.hostCatalogSource = source;
+  }
+
+  async refreshHostCatalog() {
+    if (typeof this.hostCatalogSource !== 'function') return [];
+    try {
+      const catalog = await this.hostCatalogSource();
+      this.modelDirectory.setHostCatalog(catalog.flatMap((provider) => provider.models.map((model) => ({ ...model, provider: provider.id }))));
+      return catalog;
+    } catch (error) {
+      this.logger.warn?.(`dynamic-multiagent: host model catalog unavailable: ${error?.message ?? error}`);
+      return [];
+    }
+  }
+
   async reloadConfig() {
+    this.configStore.loaded = false;
     const config = await this.configStore.load();
+    this.applyConfig(config);
+    return this.snapshot();
+  }
+
+  applyConfig(config) {
+    this.config = config;
     this.modelDirectory.set(config);
     this.connections.setConnections(config.connections);
-    return this.snapshot();
+    for (const listener of this.listeners) {
+      try { listener(config); } catch (error) { this.logger.warn?.(`dynamic-multiagent: config listener failed: ${error?.message ?? error}`); }
+    }
+  }
+
+  onConfigChange(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /** Whether orchestration is active for one conversation (global switch AND session switch). */
+  isEnabledFor(sessionId) {
+    if (this.config?.enabled === false) return false;
+    if (sessionId === undefined) return this.config?.sessionDefault !== false;
+    return this.sessionSwitches.override(sessionId) ?? this.config?.sessionDefault !== false;
+  }
+
+  sessionState(sessionId) {
+    const override = sessionId === undefined ? undefined : this.sessionSwitches.override(sessionId);
+    return {
+      sessionId,
+      globalEnabled: this.config?.enabled !== false,
+      sessionDefault: this.config?.sessionDefault !== false,
+      override: override ?? null,
+      enabled: this.isEnabledFor(sessionId),
+    };
+  }
+
+  async setSessionEnabled(sessionId, enabled) {
+    if (typeof sessionId !== 'string' || !sessionId) throw new DynamicMultiagentError('session-required', 'A session id is required');
+    await this.sessionSwitches.set(sessionId, enabled);
+    return this.sessionState(sessionId);
+  }
+
+  /** Redacted configuration plus revision for the settings UI. */
+  async readConfig() {
+    const config = await this.configStore.load();
+    return redactConfig(config);
+  }
+
+  async writeConfig(next, { expectedRevision } = {}) {
+    const current = await this.configStore.load();
+    // Header values that were redacted on the way out must survive a round trip unchanged.
+    const restored = {
+      ...next,
+      connections: (next.connections ?? []).map((connection) => {
+        const previous = current.connections.find((candidate) => candidate.id === connection.id);
+        if (!previous || !connection.headers) return connection;
+        const headers = { ...connection.headers };
+        for (const [key, value] of Object.entries(headers)) if (value === '<redacted>' && previous.headers?.[key] !== undefined) headers[key] = previous.headers[key];
+        return { ...connection, headers };
+      }),
+    };
+    const saved = await this.configStore.save(restored, { expectedRevision });
+    this.applyConfig(saved);
+    return redactConfig(saved);
+  }
+
+  async setGlobalEnabled(enabled) {
+    const current = await this.configStore.load();
+    const saved = await this.configStore.save({ ...current, enabled: Boolean(enabled) });
+    this.applyConfig(saved);
+    return redactConfig(saved);
+  }
+
+  suggestThinking(protocol, modelId) {
+    return suggestThinking(protocol, modelId);
+  }
+
+  /** Prompt previews for the UI (exactly what the Leader section and a child receive). */
+  previewPrompts({ roleId = 'worker', categoryId = 'quick' } = {}) {
+    const role = this.roles.get(roleId);
+    const sample = {
+      id: 'example',
+      title: 'Example node',
+      responsibility: '<the node responsibility written by the Leader>',
+      inputs: ['<inputs listed in the plan>'],
+      outputs: ['<expected outputs>'],
+      acceptance: ['<acceptance criteria>'],
+      writeScope: role.workspace?.write ? ['src/feature'] : undefined,
+    };
+    const child = assembleChildPrompt({
+      role,
+      node: sample,
+      runId: 'run-preview',
+      categoryId,
+      categoryDescription: TASK_CATEGORIES[categoryId]?.description,
+      tools: this.filterKnownTools(resolveRoleTools(role)),
+      writeScope: sample.writeScope,
+    });
+    return {
+      version: PROMPT_TEMPLATE_VERSION,
+      leader: LEADER_BASE_PROMPT,
+      child,
+      leaderChars: LEADER_BASE_PROMPT.length,
+      childChars: child.length,
+    };
+  }
+
+  async listRuns({ sessionId, limit = 50 } = {}) {
+    const runs = await this.runStore.list();
+    return runs
+      .filter((run) => sessionId === undefined || run.sessionId === sessionId)
+      .slice(0, limit)
+      .map((run) => summarizeRun(run));
   }
 
   ensureOpen() {
     if (this.closed) throw new DynamicMultiagentError('runtime-closed', 'Dynamic multi-agent runtime is closed');
   }
 
-  async startRun({ task, sessionId, leaderModel, projectRoot, userConstraints = [] } = {}) {
+  async startRun({ task, sessionId, leaderModel, projectRoot, userConstraints = [], currentModel } = {}) {
     this.ensureOpen();
     if (typeof task !== 'string' || task.trim() === '') throw new DynamicMultiagentError('task-required', 'A non-empty task is required');
-    const leader = this.modelDirectory.resolveLeader(leaderModel);
+    const leader = this.modelDirectory.resolveLeader(leaderModel, { current: currentModel });
     const baseline = projectRoot ? await this.workspace.captureBaseline(projectRoot) : undefined;
     const workspace = baseline ? await this.workspace.createPrivateWorkspace(baseline) : undefined;
     const run = await this.runStore.create({
@@ -99,14 +269,22 @@ export class DynamicMultiagentRuntime {
     this.ensureOpen();
     const run = await this.runStore.get(runId);
     if (!run.leader?.ref) throw new DynamicMultiagentError('leader-missing', `Run "${runId}" has no fixed Leader`);
-    const graphPlan = validatePlan(plan, { roleRegistry: this.roles, modelDirectory: this.modelDirectory, skillRegistry: this.skills });
-    const graph = new TaskGraph(graphPlan, { roleRegistry: this.roles, modelDirectory: this.modelDirectory, skillRegistry: this.skills });
+    await this.refreshHostCatalog();
+    const options = { roleRegistry: this.roles, modelDirectory: this.modelDirectory, skillRegistry: this.skills, categoryIds: Object.keys(TASK_CATEGORIES) };
+    const graphPlan = validatePlan(plan, options);
+    const graph = new TaskGraph(graphPlan, options);
     const assignments = [];
     for (const node of graphPlan.nodes) {
       const role = node.roleId ? this.roles.get(node.roleId) : this.roles.get('worker');
-      const assignment = node.model
-        ? this.modelDirectory.assign({ roleId: node.roleId, categoryId: node.categoryId, explicitRef: node.model, requirements: TASK_CATEGORIES[node.categoryId]?.capabilities ?? [] })
-        : this.modelDirectory.assign({ roleId: node.roleId, categoryId: node.categoryId, requirements: TASK_CATEGORIES[node.categoryId]?.capabilities ?? [] });
+      const assignment = this.modelDirectory.assign({
+        roleId: role.id,
+        categoryId: node.categoryId,
+        explicitRef: node.model,
+        effort: node.effort,
+        // Category capabilities only rank profiled models; nodes never fail for lack of profiles.
+        requirements: [],
+        inherit: run.leader,
+      });
       assignments.push({ nodeId: node.id, roleId: role.id, model: assignment });
     }
     return this.runStore.update(runId, (current) => ({
@@ -198,7 +376,13 @@ export class DynamicMultiagentRuntime {
               await this.recordEvent(runId, { type: 'node-review-passed', nodeId: candidate.id, review });
               return { nodeId: candidate.id, result, review };
             }
-            graph.complete(candidate.id, result, { evidence: result?.evidence ?? [] });
+            if (result?.review?.passed === false) {
+              // A reviewer node rejected the work: the defect lives upstream, so the Leader re-plans.
+              graph.fail(candidate.id, { code: 'review-failed', review: result.review, text: result.text });
+              await this.recordEvent(runId, { type: 'node-review-failed', nodeId: candidate.id, review: result.review });
+              return { nodeId: candidate.id, result, review: result.review };
+            }
+            graph.complete(candidate.id, result, { evidence: result?.evidence ?? [], ...(result?.review ? { review: result.review } : {}) });
             await this.recordEvent(runId, { type: 'node-completed', nodeId: candidate.id, result: summarizeEventResult(result) });
             return { nodeId: candidate.id, result };
           } catch (error) {
@@ -242,6 +426,7 @@ export class DynamicMultiagentRuntime {
       modelProviderMap,
       parent,
       parentResolver: ({ exec: currentExec }) => currentExec?.agent ?? exec?.agent,
+      knownTools: this.knownTools ? [...this.knownTools] : undefined,
       logger: this.logger,
     });
     return this.execute(runId, {
@@ -280,6 +465,44 @@ export class DynamicMultiagentRuntime {
     this.closed = true;
     for (const controller of this.activeRuns.values()) controller.abort('runtime-closed');
   }
+}
+
+function summarizeRun(run) {
+  const nodes = run.graph?.nodes ?? [];
+  const counts = {};
+  for (const node of nodes) counts[node.status] = (counts[node.status] ?? 0) + 1;
+  return {
+    id: run.id,
+    sessionId: run.sessionId,
+    task: run.task,
+    status: run.status,
+    checkpoint: run.checkpoint,
+    leader: run.leader?.ref,
+    mode: run.plan?.mode,
+    summary: run.plan?.summary,
+    nodes: nodes.map((node) => {
+      const assignment = run.assignments?.find((item) => item.nodeId === node.id)?.model;
+      return {
+        id: node.id,
+        title: node.title,
+        roleId: node.roleId ?? 'worker',
+        categoryId: node.categoryId,
+        status: node.status,
+        attempts: node.attempts,
+        dependencies: node.dependencies ?? [],
+        model: assignment?.ref,
+        inherited: Boolean(assignment?.inherited),
+        effort: assignment?.effort,
+        resultText: typeof node.result?.text === 'string' ? node.result.text.slice(0, 4000) : undefined,
+        review: node.review,
+        failure: node.failure,
+      };
+    }),
+    counts,
+    events: (run.events ?? []).slice(-80),
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+  };
 }
 
 function restoreGraph(graph, snapshot) {

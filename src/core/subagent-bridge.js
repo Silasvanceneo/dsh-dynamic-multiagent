@@ -1,6 +1,10 @@
 import { DynamicMultiagentError, asDynamicError } from './errors.js';
-import { assembleSystemPrompt } from './prompt.js';
+import { assembleChildPrompt, childPersona, isReviewRole } from './prompt.js';
+import { resolveRoleTools, TASK_CATEGORIES } from './roles.js';
 import { cloneJson, nowIso } from './validation.js';
+
+/** Child-request field read by the effort bridge on hosts without native effort support. */
+export const CHILD_EFFORT_KEY = 'dynamicMultiagentEffort';
 
 /**
  * Adapter between a validated task-graph node and dsh's host subagent seam.
@@ -19,6 +23,7 @@ export class SubagentTaskExecutor {
     modelProviderMap = {},
     parent,
     parentResolver,
+    knownTools,
     logger = console,
   } = {}) {
     if (!subagents || typeof subagents.start !== 'function') {
@@ -32,6 +37,7 @@ export class SubagentTaskExecutor {
     this.modelProviderMap = { ...modelProviderMap };
     this.parent = parent;
     this.parentResolver = parentResolver;
+    this.knownTools = knownTools;
     this.logger = logger;
   }
 
@@ -50,26 +56,23 @@ export class SubagentTaskExecutor {
       throw new DynamicMultiagentError('parent-agent-required', 'Host subagent execution requires the calling Agent (pass exec.agent or parent)');
     }
 
-    const toolFilter = buildToolFilter(node, role, capabilities);
+    const allowedTools = resolveAllowedTools(node, role, this.knownTools);
+    const toolFilter = buildToolFilter(node, allowedTools, capabilities);
     const maxDepth = resolveMaxDepth(role, capabilities);
     const skillSummaries = (node.skills ?? []).map((id) => this.skills?.get(id)).filter(Boolean);
     const modelRef = assignment?.ref;
-    const prompt = this.buildPrompt({ run, node, role, modelRef, skillSummaries });
+    const effort = assignment?.effort;
+    const prompt = this.buildPrompt({ run, node, role, modelRef, effort, skillSummaries, tools: toolFilter?.allow ?? allowedTools });
     const controller = new AbortController();
     const detachAbort = linkAbort(signal, controller);
+    const agentOptions = buildAgentOptions(assignment, this.modelProviderMap);
     const request = {
       label: node.title,
       prompt: [{ type: 'text', text: prompt }],
       parent: resolvedParent,
       signal: controller.signal,
-      ...(assignment ? {
-        agentOptions: {
-          provider: this.modelProviderMap[assignment.connectionId] ?? assignment.connectionId,
-          model: assignment.model,
-          ...(assignment.profile?.limits?.maxOutputTokens ? { maxTokens: assignment.profile.limits.maxOutputTokens } : {}),
-        },
-      } : {}),
-      ...(capabilities.persona ? { persona: renderPersona(role, node) } : {}),
+      ...(agentOptions ? { agentOptions } : {}),
+      ...(capabilities.persona ? { persona: childPersona(role, node) } : {}),
       ...(toolFilter ? { toolFilter } : {}),
       ...(maxDepth === undefined ? {} : { maxDepth }),
     };
@@ -79,9 +82,10 @@ export class SubagentTaskExecutor {
       nodeId: node.id,
       provider: this.providerName,
       model: modelRef,
+      ...(effort === undefined ? {} : { effort }),
       roleId: role.id,
       startedAt,
-      contract: contractDigest(node, role, skillSummaries),
+      contract: contractDigest(node, role, skillSummaries, toolFilter?.allow ?? allowedTools),
     });
 
     let child;
@@ -108,15 +112,18 @@ export class SubagentTaskExecutor {
           details: { stopReason: normalized.stopReason, childId: child.id, output: normalized.output },
         });
       }
+      const review = isReviewRole(role) ? parseReviewVerdict(normalized.text) : undefined;
       const result = {
         nodeId: node.id,
         childId: child.id,
         provider: this.providerName,
         roleId: role.id,
         model: modelRef,
+        ...(effort === undefined ? {} : { effort }),
         startedAt,
         finishedAt,
         ...normalized,
+        ...(review === undefined ? {} : { review }),
         evidence: [
           ...(normalized.evidence ?? []),
           { kind: 'host-subagent', provider: this.providerName, childId: child.id },
@@ -147,39 +154,26 @@ export class SubagentTaskExecutor {
     }
   }
 
-  buildPrompt({ run, node, role, modelRef, skillSummaries }) {
-    const task = {
-      id: node.id,
-      objective: node.responsibility,
-      inputs: node.inputs ?? [],
-      outputs: node.outputs ?? [],
-      dependencies: node.dependencies ?? [],
-      acceptance: node.acceptance ?? [],
-      ...(node.writeScope === undefined ? {} : { writeScope: node.writeScope }),
-    };
-    const assembled = assembleSystemPrompt({
-      roleId: role.id,
-      stage: 'execution',
-      categoryId: node.categoryId,
+  buildPrompt({ run, node, role, modelRef, effort, skillSummaries, tools }) {
+    const dependencyResults = (node.dependencies ?? []).map((id) => {
+      const settled = run.graph?.nodes?.find((candidate) => candidate.id === id);
+      const text = settled?.result?.text;
+      return text ? `Result of ${id}${settled.title && settled.title !== id ? ` (${settled.title})` : ''}:\n${truncate(text, 6000)}` : undefined;
+    }).filter(Boolean);
+    return assembleChildPrompt({
+      role,
+      node: { ...node, inputs: [...(node.inputs ?? []), ...dependencyResults] },
+      runId: run.id,
       modelRef,
-      task,
-      specializedDefinition: role.baseRole ? role : undefined,
+      effort,
+      categoryId: node.categoryId,
+      categoryDescription: TASK_CATEGORIES[node.categoryId]?.description,
+      tools,
+      writeScope: node.writeScope,
       skillSummaries,
-      contextRefs: [
-        `dynamic-run:${run.id}`,
-        ...(run.workspace?.integrationPath ? [`private-workspace:${run.workspace.integrationPath}`] : []),
-      ],
+      workspacePath: run.workspace?.integrationPath,
+      userConstraints: run.userConstraints ?? [],
     });
-    return [
-      assembled,
-      `Task node: ${node.id} — ${node.title}`,
-      `Role contract: ${role.description ?? role.id}`,
-      `Declared tools: ${(node.tools ?? []).join(', ') || 'none beyond the host composition'}`,
-      `Declared skills: ${(node.skills ?? []).join(', ') || 'none'}`,
-      `Required outputs: ${(node.outputs ?? []).join(', ') || 'result'}`,
-      `Acceptance criteria:\n${(node.acceptance ?? []).map((item) => `- ${item}`).join('\n') || '- Return a verifiable result with evidence.'}`,
-      'Return a concise result and cite observable evidence. Do not claim work that was not performed.',
-    ].join('\n\n');
   }
 
   resolveParent({ parent, exec }) {
@@ -199,17 +193,62 @@ function resolveAssignment(run, node, modelDirectory) {
   return modelDirectory.get(node.model);
 }
 
-function buildToolFilter(node, role, capabilities) {
-  if (!(node.tools?.length)) return undefined;
-  const allowedByRole = new Set(role.tools ?? []);
-  const outside = node.tools.filter((tool) => !allowedByRole.has(tool));
-  if (outside.length) {
-    throw new DynamicMultiagentError('role-tool-widening', `Node "${node.id}" requests tools outside role "${role.id}": ${outside.join(', ')}`);
+/**
+ * Child agentOptions. An inherited assignment sends no route so dsh keeps the parent's
+ * provider/model; the effort travels both as the native field (dsh ≥ 0.2.1) and as a private
+ * field the plugin's effort bridge applies on hosts that drop the native one.
+ */
+function buildAgentOptions(assignment, modelProviderMap) {
+  if (!assignment) return undefined;
+  const route = assignment.inherited ? undefined : assignment.route ?? { provider: assignment.connectionId, model: assignment.model };
+  const options = {
+    ...(route ? { provider: modelProviderMap[assignment.connectionId] ?? route.provider, model: route.model } : {}),
+    ...(assignment.maxOutputTokens ? { maxTokens: assignment.maxOutputTokens } : {}),
+    ...(assignment.effort === undefined ? {} : { reasoningEffort: assignment.effort, [CHILD_EFFORT_KEY]: assignment.effort }),
+  };
+  return Object.keys(options).length ? options : undefined;
+}
+
+function resolveAllowedTools(node, role, knownTools) {
+  const fromRole = resolveRoleTools(role);
+  const known = knownTools ? new Set(knownTools) : undefined;
+  return known ? fromRole.filter((tool) => known.has(tool)) : fromRole;
+}
+
+function buildToolFilter(node, allowedTools, capabilities) {
+  const allowed = new Set(allowedTools);
+  const requested = node.tools?.length ? node.tools : undefined;
+  if (requested) {
+    const outside = requested.filter((tool) => !allowed.has(tool));
+    if (outside.length) {
+      throw new DynamicMultiagentError('role-tool-widening', `Node "${node.id}" requests tools outside its role: ${outside.join(', ')}; allowed: ${[...allowed].join(', ') || 'none'}`);
+    }
   }
+  const allow = requested ?? [...allowed];
+  if (!allow.length) return undefined;
   if (!capabilities.toolFilter) {
-    throw new DynamicMultiagentError('provider-capability', `Host provider cannot enforce the tool filter required by node "${node.id}"`);
+    if (requested) throw new DynamicMultiagentError('provider-capability', `Host provider cannot enforce the tool filter required by node "${node.id}"`);
+    return undefined;
   }
-  return { allow: [...node.tools] };
+  return { allow: [...allow] };
+}
+
+/** Extract a reviewer verdict from the child's fenced JSON block. */
+export function parseReviewVerdict(text) {
+  const blocks = [...String(text ?? '').matchAll(/```(?:json)?\s*([\s\S]*?)```/g)].map((match) => match[1]);
+  for (const block of blocks.reverse()) {
+    try {
+      const value = JSON.parse(block);
+      if (value && typeof value.passed === 'boolean') {
+        return { passed: value.passed, defects: Array.isArray(value.defects) ? value.defects : [], retry: Boolean(value.retry) };
+      }
+    } catch { /* not the verdict block */ }
+  }
+  return undefined;
+}
+
+function truncate(text, limit) {
+  return text.length > limit ? `${text.slice(0, limit)}\n… (${text.length - limit} more characters)` : text;
 }
 
 function resolveMaxDepth(role, capabilities) {
@@ -221,21 +260,11 @@ function resolveMaxDepth(role, capabilities) {
   return value;
 }
 
-function renderPersona(role, node) {
-  return [
-    `Role: ${role.id}`,
-    role.description,
-    `Write permission: ${role.workspace?.write ? 'assigned scope only' : 'read-only'}`,
-    `Delegation: ${role.delegation?.allowed ? `allowed up to ${role.delegation.maxDepth}` : 'not allowed'}`,
-    `Node: ${node.title}`,
-  ].filter(Boolean).join('\n');
-}
-
-function contractDigest(node, role, skillSummaries) {
+function contractDigest(node, role, skillSummaries, tools) {
   return {
     roleId: role.id,
     roleVersion: role.version ?? role.promptVersion,
-    tools: [...(node.tools ?? [])],
+    tools: [...tools],
     skills: skillSummaries.map((skill) => ({ id: skill.id, version: skill.version, contentHash: skill.contentHash })),
     writeScope: cloneJson(node.writeScope),
   };

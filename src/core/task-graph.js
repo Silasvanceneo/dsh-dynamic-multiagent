@@ -124,7 +124,7 @@ export class TaskGraph {
   }
 }
 
-export function validatePlan(input, { roleRegistry, modelDirectory, skillRegistry } = {}) {
+export function validatePlan(input, { roleRegistry, modelDirectory, skillRegistry, categoryIds } = {}) {
   const plan = assertRecord(input, 'plan');
   const mode = assertEnum(plan.mode, COLLABORATION_MODES, 'plan.mode');
   const nodes = assertArray(plan.nodes, 'plan.nodes').map((node, index) => normalizeNode(node, index));
@@ -138,6 +138,7 @@ export function validatePlan(input, { roleRegistry, modelDirectory, skillRegistr
     for (const dependency of node.dependencies) if (!ids.has(dependency)) throw new TaskGraphError('dependency-missing', `Node "${node.id}" depends on unknown node "${dependency}"`);
     if (node.roleId && roleRegistry) roleRegistry.get(node.roleId);
     if (node.model && modelDirectory) modelDirectory.get(node.model);
+    if (node.categoryId && categoryIds && !categoryIds.includes(node.categoryId)) throw new TaskGraphError('category-not-found', `Node "${node.id}" uses unknown category "${node.categoryId}"; use one of ${categoryIds.join(', ')}`);
     if (node.skills && skillRegistry) for (const skill of node.skills) skillRegistry.get(skill);
   }
   assertAcyclic(nodes);
@@ -168,7 +169,8 @@ function normalizeNode(input, index) {
     responsibility: assertString(node.responsibility, `${path}.responsibility`),
     roleId: node.roleId === undefined ? undefined : assertString(node.roleId, `${path}.roleId`),
     categoryId: node.categoryId === undefined ? undefined : assertString(node.categoryId, `${path}.categoryId`),
-    model: node.model === undefined ? undefined : assertString(node.model, `${path}.model`),
+    model: node.model === undefined || node.model === null || node.model === '' ? undefined : assertString(node.model, `${path}.model`),
+    effort: node.effort === undefined || node.effort === null || node.effort === '' ? undefined : assertString(node.effort, `${path}.effort`),
     skills: assertArray(node.skills ?? [], `${path}.skills`).map((item) => assertString(item, `${path}.skills[]`)),
     tools: assertArray(node.tools ?? [], `${path}.tools`).map((item) => assertString(item, `${path}.tools[]`)),
     inputs: assertArray(node.inputs ?? [], `${path}.inputs`).map((item) => assertString(item, `${path}.inputs[]`)),

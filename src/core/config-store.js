@@ -5,14 +5,21 @@ import { assertArray, assertRecord, assertString, cloneJson, isRecord, nowIso } 
 
 export const CONFIG_VERSION = 1;
 
+export const THINKING_MODES = Object.freeze(['none', 'openai', 'adaptive', 'budget']);
+
 export const DEFAULT_CONFIG = Object.freeze({
   version: CONFIG_VERSION,
+  revision: 0,
+  enabled: true,
+  sessionDefault: true,
   connections: [],
   modelProfiles: [],
   defaults: {
     leader: undefined,
     roles: {},
     categories: {},
+    roleEfforts: {},
+    categoryEfforts: {},
   },
   skillSources: {
     localRoots: [],
@@ -48,8 +55,12 @@ export class ConfigStore {
     return cloneJson(this.value);
   }
 
-  async save(next = this.value ?? this.initial) {
-    const normalized = normalizeConfig(next);
+  async save(next = this.value ?? this.initial, { expectedRevision } = {}) {
+    const current = await this.load();
+    if (expectedRevision !== undefined && expectedRevision !== current.revision) {
+      throw new DynamicMultiagentError('config-conflict', `Configuration changed elsewhere (revision ${current.revision}, expected ${expectedRevision})`);
+    }
+    const normalized = normalizeConfig({ ...next, revision: current.revision + 1, updatedAt: nowIso() });
     await mkdir(dirname(this.filePath), { recursive: true });
     const temporary = `${this.filePath}.tmp-${process.pid}-${Date.now()}`;
     try {
@@ -94,8 +105,16 @@ export function normalizeConfig(input) {
   const defaults = normalizeDefaults(source.defaults ?? {});
   const skillSources = normalizeSkillSources(source.skillSources ?? {});
   const retention = normalizeRetention(source.retention ?? {});
+  const ids = new Set();
+  for (const connection of connections) {
+    if (ids.has(connection.id)) throw new DynamicMultiagentError('invalid-config', `Connection id "${connection.id}" is used more than once`);
+    ids.add(connection.id);
+  }
   return {
     version,
+    revision: Number.isSafeInteger(source.revision) && source.revision >= 0 ? source.revision : 0,
+    enabled: source.enabled === undefined ? true : Boolean(source.enabled),
+    sessionDefault: source.sessionDefault === undefined ? true : Boolean(source.sessionDefault),
     connections,
     modelProfiles,
     defaults,
@@ -109,6 +128,7 @@ function normalizeConnection(input, index) {
   const path = `config.connections[${index}]`;
   const value = assertRecord(input, path);
   const id = assertString(value.id, `${path}.id`);
+  if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new DynamicMultiagentError('invalid-config', `${path}.id may only contain letters, digits, ".", "_" and "-"`);
   const protocol = value.protocol;
   if (protocol !== 'openai-chat' && protocol !== 'anthropic-messages') {
     throw new DynamicMultiagentError('invalid-config', `${path}.protocol must be openai-chat or anthropic-messages`);
@@ -136,9 +156,18 @@ function normalizeConnection(input, index) {
 function normalizeModelRef(input, path) {
   if (typeof input === 'string') return { id: assertString(input, path) };
   const value = assertRecord(input, path);
+  const thinking = value.thinking ?? undefined;
+  if (thinking !== undefined && !THINKING_MODES.includes(thinking)) {
+    throw new DynamicMultiagentError('invalid-config', `${path}.thinking must be one of ${THINKING_MODES.join(', ')}`);
+  }
   return {
     id: assertString(value.id, `${path}.id`),
-    label: value.label === undefined ? undefined : assertString(value.label, `${path}.label`),
+    label: value.label === undefined || value.label === '' ? undefined : assertString(value.label, `${path}.label`),
+    efforts: assertArray(value.efforts ?? [], `${path}.efforts`).map((effort) => assertString(effort, `${path}.efforts[]`)),
+    thinking,
+    contextWindow: value.contextWindow === undefined || value.contextWindow === null ? undefined : normalizePositiveInt(value.contextWindow, `${path}.contextWindow`),
+    maxTokens: value.maxTokens === undefined || value.maxTokens === null ? undefined : normalizePositiveInt(value.maxTokens, `${path}.maxTokens`),
+    vision: Boolean(value.vision ?? false),
   };
 }
 
@@ -175,9 +204,11 @@ function normalizeEvidence(input, path) {
 function normalizeDefaults(input) {
   const value = assertRecord(input, 'config.defaults');
   return {
-    leader: value.leader === undefined ? undefined : assertString(value.leader, 'config.defaults.leader'),
+    leader: value.leader === undefined || value.leader === null || value.leader === '' ? undefined : assertString(value.leader, 'config.defaults.leader'),
     roles: normalizeStringMap(value.roles ?? {}, 'config.defaults.roles'),
     categories: normalizeStringMap(value.categories ?? {}, 'config.defaults.categories'),
+    roleEfforts: normalizeStringMap(value.roleEfforts ?? {}, 'config.defaults.roleEfforts'),
+    categoryEfforts: normalizeStringMap(value.categoryEfforts ?? {}, 'config.defaults.categoryEfforts'),
   };
 }
 
@@ -240,8 +271,12 @@ export function redactConfig(config) {
 export function resolveCredentialValue(connection, resolver) {
   if (connection.credentialRef === undefined) return undefined;
   if (typeof resolver !== 'function') throw new DynamicMultiagentError('credential-unavailable', `Credential resolver is required for ${connection.credentialRef}`);
-  const value = resolver(connection.credentialRef);
-  if (value && typeof value.then === 'function') return value;
-  return value;
+  return Promise.resolve(resolver(connection.credentialRef)).then(unwrapCredential);
+}
+
+// dsh credential providers resolve to `{ value, source }`; plain resolvers may return the string.
+function unwrapCredential(resolved) {
+  if (resolved === undefined || resolved === null) return undefined;
+  return typeof resolved === 'string' ? resolved : resolved.value;
 }
 
