@@ -236,20 +236,43 @@ function installConnectionAdapter(ctx, runtime, ready, credentialResolver) {
  */
 function installRpcChannel(ctx, runtime, ready) {
   if (typeof ctx.inject !== 'function') return () => {};
+  const answer = async (endpoint, payload) => {
+    await ready;
+    try {
+      return { ok: true, value: await handleRpc(ctx, runtime, endpoint, payload ?? {}) };
+    } catch (error) {
+      return { ok: false, error: { code: 'bad-request', message: `${error?.code ? `[${error.code}] ` : ''}${errorMessage(error)}`, details: { issues: [] } } };
+    }
+  };
   const fiber = ctx.inject(['connection'], (connectionCtx) => {
-    const rpc = connectionCtx.connection?.rpc;
-    if (typeof rpc?.handle !== 'function') return;
-    rpc.handle(RPC_CHANNEL, async (endpoint, payload) => {
-      await ready;
-      try {
-        return { ok: true, value: await handleRpc(ctx, runtime, endpoint, payload ?? {}) };
-      } catch (error) {
-        return { ok: false, error: { code: 'bad-request', message: `${error?.code ? `[${error.code}] ` : ''}${errorMessage(error)}`, details: { issues: [] } } };
+    const connection = connectionCtx.connection;
+    // dsh 0.2.x: authenticated exact routes under /api (the browser carries the session cookie).
+    if (typeof connection?.fetch?.register === 'function') {
+      for (const endpoint of RPC_ENDPOINTS) {
+        connectionCtx.effect(() => connection.fetch.register({
+          path: `/api/${FETCH_PREFIX}/${endpoint}`,
+          methods: ['POST'],
+          requestBody: 'buffered',
+          fetch: async (request) => {
+            let body;
+            try { body = await request.json(); } catch { return new Response('body is not JSON', { status: 400 }); }
+            return Response.json({ type: 'server-response', rpcId: body?.rpcId ?? 'none', result: await answer(endpoint, body?.payload) });
+          },
+        }), `dynamic-multiagent: /api/${FETCH_PREFIX}/${endpoint}`);
       }
-    }, { authority: 'loopback' });
+      return;
+    }
+    // dsh 0.1.x: generic loopback channel.
+    if (typeof connection?.rpc?.handle === 'function') {
+      connection.rpc.handle(RPC_CHANNEL, (endpoint, payload) => answer(endpoint, payload), { authority: 'loopback' });
+    }
   });
   return () => { try { fiber?.dispose?.(); } catch { /* best effort */ } };
 }
+
+/** Exact paths for dsh 0.2.x routes: `/api/dynamic-multiagent.<endpoint>` (no nested segments). */
+const FETCH_PREFIX = 'dynamic-multiagent';
+const RPC_ENDPOINTS = ['overview', 'config/save', 'config/enabled', 'session/get', 'session/set', 'runs/list', 'runs/cancel', 'prompts/preview', 'thinking/suggest'];
 
 async function handleRpc(ctx, runtime, endpoint, payload) {
   switch (endpoint) {
@@ -270,7 +293,7 @@ async function handleRpc(ctx, runtime, endpoint, payload) {
         host: {
           subagentProvider: runtime.deployment.subagentProvider,
           subagentAvailable: Boolean(provider),
-          toolFilter: Boolean(provider?.capabilities?.toolFilter),
+          toolFilter: Boolean(provider?.capabilities?.toolFilter ?? provider?.capabilities?.agentOptions),
           depthLimit: Boolean(provider?.capabilities?.depthLimit),
           llm: Boolean(ctx.get?.('llm') ?? ctx.llm),
         },

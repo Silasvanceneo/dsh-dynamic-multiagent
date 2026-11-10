@@ -50,7 +50,7 @@ export class SubagentTaskExecutor {
     if (!provider && typeof this.subagents.getProvider === 'function') {
       throw new DynamicMultiagentError('subagent-provider-missing', `Host subagent provider "${this.providerName}" is not registered`);
     }
-    const capabilities = provider?.capabilities ?? {};
+    const capabilities = normalizeCapabilities(provider?.capabilities);
     const resolvedParent = this.resolveParent({ parent, exec });
     if (!resolvedParent) {
       throw new DynamicMultiagentError('parent-agent-required', 'Host subagent execution requires the calling Agent (pass exec.agent or parent)');
@@ -207,6 +207,17 @@ function buildAgentOptions(assignment, modelProviderMap) {
     ...(assignment.effort === undefined ? {} : { reasoningEffort: assignment.effort, [CHILD_EFFORT_KEY]: assignment.effort }),
   };
   return Object.keys(options).length ? options : undefined;
+}
+
+// dsh 0.1.x advertises persona/toolFilter as capability flags; 0.2.x in-process providers apply both
+// unconditionally and dropped the flags. Treat them as supported unless explicitly set to false.
+function normalizeCapabilities(capabilities = {}) {
+  const legacy = 'toolFilter' in capabilities || 'persona' in capabilities;
+  return {
+    ...capabilities,
+    toolFilter: legacy ? Boolean(capabilities.toolFilter) : capabilities.agentOptions === true,
+    persona: legacy ? Boolean(capabilities.persona) : capabilities.agentOptions === true,
+  };
 }
 
 function resolveAllowedTools(node, role, knownTools) {

@@ -43,7 +43,26 @@ When the host profile composes a subagent provider (the installed in-process pro
 3. `dynamic_multiagent_execute` binds each ready node to `ctx.subagents.start(provider, request)`; the calling Agent is the parent authority.
 4. `dynamic_multiagent_status` returns graph state, child results, and append-only lifecycle events.
 
-The bundle option `subagentProvider` changes the default provider name for step 3. A node's `model` is translated to the host child `agentOptions` pair (`provider` = connection id unless a host mapping is supplied, `model` = model id). Keep connection ids aligned with the host LLM adapter names when using the in-process provider.
+The bundle option `subagentProvider` changes the default provider name for step 3. A node's `model` is a directory ref: `provider:model` for a dsh model enabled on the Models tab, or `<connection>:<model>` for an advanced connection (served by the plugin as the dsh route `dma-<connection>`). A node without a model, role default, or category default inherits the Leader's model.
+
+## UI and switches
+
+The bundle ships a browser half (`lib/client.js`, built from `client/` with `npm run build`):
+
+- **Settings page** — dsh 0.1.x: *Settings → 多智能体 / Multi-agent*; dsh 0.2.x (Desktop): *Plugins → dsh-dynamic-multiagent*. Tabs: overview (host health), models (enable dsh models, tag capabilities, see reasoning efforts; advanced custom connections), routing (model + reasoning effort per role and category), skills, runs (task graph, node results, events, cancel), prompts (the exact Leader and child prompts).
+- **Global switch** — turns orchestration off for every conversation (no prompt section, no tools).
+- **Per-conversation switch** — the 多智能体 chip next to the composer; *新对话默认开启* decides conversations without their own setting. Overrides live in `<dataDir>/sessions.json`, not in the dsh session log, so logs stay readable without the plugin.
+- **Tool cards** — orchestration tool calls render as compact cards instead of raw JSON.
+
+The browser talks to the host over `/api/dynamic-multiagent/<endpoint>` (dsh 0.2.x, authenticated) or the loopback-only `/dynamic-multiagent/<endpoint>` channel (dsh 0.1.x).
+
+## Reasoning effort
+
+Each plan node may set `effort`; otherwise the role default, then the category default, then the model's own default applies. Efforts are validated against the model: dsh models report theirs through `ctx.llm.resolveModelInfo` (for example DeepSeek `off/high/max`, Claude 4.6+ `off/low/medium/high/max`); advanced connections declare them per model. An explicit effort the model does not offer is rejected at plan time; an unsupported default is dropped with a note.
+
+dsh 0.2.x applies a child's `agentOptions.reasoningEffort` natively. On 0.1.x children inherit only provider/model/maxTokens, so the plugin restores the effort on every request of that child through an agent-scoped `agent/request` listener.
+
+Advanced connections map efforts to the wire: OpenAI-compatible `reasoning_effort`; Anthropic adaptive thinking (`thinking.type: "adaptive"` + `output_config.effort`, Claude 4.6+/Fable) or a thinking budget (Claude 4.5 and older). *Suggest from id* on the Models tab fills these from the model id.
 
 ## Connection example
 
@@ -87,7 +106,7 @@ The bundle option `subagentProvider` changes the default provider name for step 
 
 ## Current phase
 
-This checkout implements the P0/P1 core plus the P2 host-subagent bridge. dsh-specific UI business nodes and Desktop-specific packaging still require validation against the installed Desktop runtime before being marked as complete. The core deliberately exposes those seams instead of faking them.
+P0/P1 core, P2 host-subagent bridge, and the UI layer (settings page, per-conversation switch, reasoning-effort routing). The UI was exercised in the real Web UI of dsh 0.1.0-rc.6 (CLI) and of the dsh 0.2.1-rc.3 runtime bundled with Desktop (run in web mode). A live end-to-end delegation against a model provider has not been run in this checkout.
 
 ## Model Experience
 
