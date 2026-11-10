@@ -65,7 +65,7 @@ export class WorkspaceManager {
     const status = await execGit(agent.path, ['status', '--porcelain']);
     if (!status.trim()) return { changed: false, commit: await gitHead(agent.path) };
     await execGit(agent.path, ['add', '-A']);
-    await execGit(agent.path, ['-c', 'user.name=dsh-dynamic-multiagent', '-c', 'user.email=dsh@localhost', 'commit', '-m', `Agent ${agentId}`]);
+    await execGit(agent.path, ['commit', '-m', `Agent ${agentId}`]);
     const commit = await gitHead(agent.path);
     await execGit(record.integration, ['merge', '--no-ff', '--no-edit', commit]);
     return { changed: true, commit };
@@ -162,8 +162,11 @@ async function inspectProjectShape(root) {
 async function initGit(directory, message) {
   await execGit(directory, ['init', '--initial-branch=baseline']);
   await execGit(directory, ['config', 'core.autocrlf', 'false']);
+  // The private repository commits and merges on its own; never depend on a global git identity.
+  await execGit(directory, ['config', 'user.name', 'dsh-dynamic-multiagent']);
+  await execGit(directory, ['config', 'user.email', 'dsh@localhost']);
   await execGit(directory, ['add', '-A']);
-  await execGit(directory, ['-c', 'user.name=dsh-dynamic-multiagent', '-c', 'user.email=dsh@localhost', 'commit', '--allow-empty', '-m', message]);
+  await execGit(directory, ['commit', '--allow-empty', '-m', message]);
 }
 
 async function gitMetadata(directory) {
