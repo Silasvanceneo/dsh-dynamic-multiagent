@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Dynamic multi-agent orchestration",
-    "description": "Adds model-routed task graphs, role specialization, dual-protocol connections, and recoverable runs to dsh."
+    "title": "Dynamic multi-agent",
+    "description": "Lets the conversation's model split a task into a graph of child agents, each with its own role, model, reasoning effort, and tool set, with a settings page and a per-conversation switch."
   }
 }

@@ -472,7 +472,7 @@ Leader 基础指令使其知道何时需要规划、特化和检查；Leader 通
 
 ## 10. 依据与范围说明
 
-- 本机 CLI 包：`npm 全局安装的 @deepseek-ai/dsh`，版本 `0.1.0-rc.6`。
+- 本机 CLI 包：npm 全局安装的 `@deepseek-ai/dsh`，版本 `0.1.0-rc.6`。
 - 已核对本机 `dsh-subagent`、`dsh-skill`、`dsh-workflow` 和 Agent 模型选择声明。
 - [dsh 架构](https://github.com/deepseek-ai/deepseek-harness/blob/fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159/docs/architecture.md)。
 - [dsh 扩展方式](https://github.com/deepseek-ai/deepseek-harness/blob/fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159/docs/cookbook/extension-cookbook.md)。

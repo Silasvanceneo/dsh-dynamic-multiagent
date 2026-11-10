@@ -82,7 +82,7 @@
 .dma-composerChip:hover { color: var(--dsw-alias-label-primary); }
 .dma-composerChipOn { color: var(--dsw-alias-brand-primary); }
 .dma-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.dma-popover { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 50; width: 320px; max-height: 420px; overflow: auto; border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-layer-3); box-shadow: 0 8px 24px rgba(0,0,0,.16); padding: 4px 14px 10px; --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2); --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2); }
+.dma-popover { position: absolute; bottom: calc(100% + 8px); right: 0; z-index: 50; width: 320px; max-height: 420px; overflow: auto; border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-layer-3); box-shadow: 0 8px 24px rgba(0,0,0,.16); padding: 4px 14px 10px; --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2); --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2); }
 .dma-popoverRuns { display: flex; flex-direction: column; gap: 6px; padding: 6px 0; }
 .dma-miniRun { display: flex; flex-direction: column; gap: 4px; padding: 8px 0; border-top: 1px solid var(--dsw-alias-border-l2); }
 .dma-bar { display: flex; height: 4px; border-radius: 2px; overflow: hidden; background: var(--dsw-alias-border-l2); }

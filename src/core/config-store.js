@@ -145,12 +145,20 @@ function normalizeConnection(input, index) {
     id,
     protocol,
     baseUrl,
-    credentialRef: value.credentialRef === undefined ? undefined : assertString(value.credentialRef, `${path}.credentialRef`),
+    credentialRef: normalizeCredentialRef(value.credentialRef, `${path}.credentialRef`),
     models,
     headers,
     headerRefs,
     requestTimeoutMs: normalizePositiveInt(value.requestTimeoutMs ?? 120_000, `${path}.requestTimeoutMs`),
   };
+}
+
+// dsh credential references are environment-variable style names (DEEPSEEK_API_KEY).
+function normalizeCredentialRef(value, path) {
+  if (value === undefined || value === null || value === '') return undefined;
+  const ref = assertString(value, path).trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(ref)) throw new DynamicMultiagentError('invalid-config', `${path} must be an environment-variable style name such as MY_API_KEY`);
+  return ref;
 }
 
 function normalizeModelRef(input, path) {

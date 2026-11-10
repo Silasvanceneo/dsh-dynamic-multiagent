@@ -13,15 +13,15 @@ test('config and run stores persist atomically and redact credentials', async ()
     const configPath = join(dir, 'config.json');
     const configStore = new ConfigStore(configPath, { initial: {
       version: 1,
-      connections: [{ id: 'lab', protocol: 'openai-chat', baseUrl: 'http://127.0.0.1:9000/v1', credentialRef: 'lab/key', models: [{ id: 'coder' }], headers: { Authorization: 'Bearer secret' } }],
+      connections: [{ id: 'lab', protocol: 'openai-chat', baseUrl: 'http://127.0.0.1:9000/v1', credentialRef: 'LAB_API_KEY', models: [{ id: 'coder' }], headers: { Authorization: 'Bearer secret' } }],
       modelProfiles: [{ ref: 'lab:coder', capabilities: ['coding'] }],
       defaults: { leader: 'lab:coder' },
     } });
     await configStore.save(await configStore.load());
     const redacted = await configStore.redacted();
-    assert.equal(redacted.connections[0].credentialRef, 'lab/key');
+    assert.equal(redacted.connections[0].credentialRef, 'LAB_API_KEY');
     assert.equal(redacted.connections[0].headers.Authorization, '<redacted>');
-    assert.match(await readFile(configPath, 'utf8'), /lab\/key/);
+    assert.match(await readFile(configPath, 'utf8'), /LAB_API_KEY/);
     assert.doesNotMatch(await readFile(configPath, 'utf8'), /secret/);
 
     const runs = new RunStore(join(dir, 'runs.json'));

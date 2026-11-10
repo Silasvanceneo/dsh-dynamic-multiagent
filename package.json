@@ -1,22 +1,46 @@
 {
   "name": "dsh-dynamic-multiagent",
   "version": "0.2.0",
-  "description": "Dynamic multi-agent orchestration plugin for DeepSeek Harness.",
+  "description": "Dynamic multi-agent orchestration for DeepSeek Harness: task graphs of child agents with per-node role, model, reasoning effort, and tools, plus a settings UI.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "multi-agent",
+    "orchestration",
+    "subagent",
+    "reasoning-effort"
+  ],
+  "author": "Silasvanceneo",
+  "license": "MIT",
+  "homepage": "https://github.com/Silasvanceneo/dsh-dynamic-multiagent#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Silasvanceneo/dsh-dynamic-multiagent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Silasvanceneo/dsh-dynamic-multiagent/issues"
+  },
   "type": "module",
   "main": "src/index.js",
+  "icon": "./assets/icon.svg",
   "exports": {
     ".": "./src/index.js",
     "./client": "./lib/client.js",
     "./core/*": "./src/core/*.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
   },
   "files": [
+    "locale/*.json",
     "src",
     "lib",
+    "assets",
     "config",
     "cordis.patch.yml",
-    "locale",
-    "README.md"
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=20",
@@ -37,9 +61,12 @@
     "build": "node scripts/build-client.mjs",
     "test": "node --test",
     "test:watch": "node --test --watch",
-    "check": "node scripts/build-client.mjs && node --check src/index.js && node --test"
+    "check": "node scripts/build-client.mjs && node --check src/index.js && node --test",
+    "prepublishOnly": "npm run check"
   },
-  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "devDependencies": {
     "esbuild": "^0.28.2"
   }

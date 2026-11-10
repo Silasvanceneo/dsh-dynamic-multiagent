@@ -44,8 +44,8 @@ test('normalizes Anthropic Messages stream and maps authentication failures', as
     response.end();
   }, async (baseUrl) => {
     const manager = new ProtocolConnectionManager({
-      connections: [{ id: 'anthropic', protocol: 'anthropic-messages', baseUrl: `${baseUrl}/v1`, models: [{ id: 'researcher' }], credentialRef: 'lab/key' }],
-      credentialResolver: (ref) => ref === 'lab/key' ? 'secret' : undefined,
+      connections: [{ id: 'anthropic', protocol: 'anthropic-messages', baseUrl: `${baseUrl}/v1`, models: [{ id: 'researcher' }], credentialRef: 'LAB_API_KEY' }],
+      credentialResolver: (ref) => ref === 'LAB_API_KEY' ? 'secret' : undefined,
     });
     const result = await manager.collect({ connectionId: 'anthropic', model: 'researcher', messages: [{ role: 'user', content: 'hi' }] });
     assert.equal(result.text, 'research');

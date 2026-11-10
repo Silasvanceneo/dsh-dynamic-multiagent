@@ -80,6 +80,9 @@ export class ConnectionAdapter {
       throw Object.assign(new Error(`Model "${model.id}" on ${connection.id} does not offer reasoning effort "${effort}"`), { code: 'UNSUPPORTED_REASONING_EFFORT' });
     }
     const credential = await this.resolveCredential(connection);
+    if (connection.credentialRef && !credential) {
+      throw Object.assign(new Error(`Credential "${connection.credentialRef}" for connection ${connection.id} is not configured; set it as an environment variable or a dsh credential`), { code: 'AUTH' });
+    }
     const headers = {
       accept: 'text/event-stream',
       'content-type': 'application/json',
