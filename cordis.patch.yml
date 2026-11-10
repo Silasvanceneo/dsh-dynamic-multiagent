@@ -1,0 +1,9 @@
+# dsh-dynamic-multiagent: plugin layer
+
+- insert:
+    - id: dynamic-multiagent
+      name: dsh-dynamic-multiagent
+      config:
+        dataDir: "${DSH_HOME}/dynamic-multiagent"
+        autoInstallSkills: false
+        exposeTools: true

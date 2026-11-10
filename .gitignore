@@ -1,0 +1,14 @@
+node_modules/
+coverage/
+*.log
+*.tmp-*
+
+# Local profile snapshots and agent session state (personal, not source)
+.lab-backup/
+.omx/
+
+# Runtime data written by the plugin when pointed at the checkout
+.dsh-dynamic-multiagent/
+
+# Verification artifacts
+.verify/

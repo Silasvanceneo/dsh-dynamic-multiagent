@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "connections": [],
+  "modelProfiles": [],
+  "defaults": {
+    "leader": null,
+    "roles": {},
+    "categories": {}
+  },
+  "skillSources": {
+    "localRoots": [],
+    "gitRepos": [],
+    "autoInstall": false
+  },
+  "retention": {
+    "maxRuns": 200
+  }
+}

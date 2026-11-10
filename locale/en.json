@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Dynamic multi-agent orchestration",
+    "description": "Adds model-routed task graphs, role specialization, dual-protocol connections, and recoverable runs to dsh."
+  }
+}
