@@ -45,7 +45,7 @@ export class DynamicMultiagentRuntime {
     this.config = undefined;
     this.listeners = new Set();
     this.hostCatalogSource = undefined;
-    this.knownTools = undefined;
+    this.knownToolsSource = undefined;
   }
 
   async initialize() {
@@ -99,12 +99,24 @@ export class DynamicMultiagentRuntime {
     };
   }
 
-  filterKnownTools(tools) {
-    return this.knownTools ? tools.filter((tool) => this.knownTools.has(tool)) : tools;
+  /** Keep only tools the given agent scope can see; without a scope the mapping is shown as-is. */
+  filterKnownTools(tools, scope) {
+    const known = scope === undefined ? undefined : this.currentKnownTools(scope);
+    return known ? tools.filter((tool) => known.has(tool)) : tools;
   }
 
-  setKnownTools(names) {
-    this.knownTools = names ? new Set(names) : undefined;
+  /** Install a function returning the host's registered tool names (read on demand). */
+  setKnownToolsSource(source) {
+    this.knownToolsSource = source;
+  }
+
+  currentKnownTools(scope) {
+    try {
+      const names = this.knownToolsSource?.(scope);
+      return names?.length ? new Set(names) : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Install a function returning the host model catalog (used for effort validation and the UI). */
@@ -426,7 +438,8 @@ export class DynamicMultiagentRuntime {
       modelProviderMap,
       parent,
       parentResolver: ({ exec: currentExec }) => currentExec?.agent ?? exec?.agent,
-      knownTools: this.knownTools ? [...this.knownTools] : undefined,
+      // Tools come from the agent's preset scope, so resolve them as the parent agent sees them.
+      knownTools: (() => { const known = parent ? this.currentKnownTools(parent) : undefined; return known ? [...known] : undefined; })(),
       logger: this.logger,
     });
     return this.execute(runId, {

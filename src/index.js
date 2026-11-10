@@ -169,18 +169,9 @@ function installHostCatalog(ctx, runtime) {
   const llm = () => ctx.get?.('llm') ?? ctx.llm;
   runtime.setHostCatalogSource(async () => readHostCatalog(llm()));
   const tools = () => ctx.get?.('tools') ?? ctx.tools;
-  const refreshTools = () => {
-    try {
-      const names = tools()?.schemas?.()?.map((schema) => schema.name);
-      if (names?.length) runtime.setKnownTools(names);
-    } catch { /* registry not ready */ }
-  };
+  runtime.setKnownToolsSource((scope) => tools()?.schemas?.(scope)?.map((schema) => schema.name));
   const handles = [];
-  if (typeof ctx.on === 'function') {
-    handles.push(ctx.on('llm/adapters-updated', () => { runtime.refreshHostCatalog(); }));
-    handles.push(ctx.on('tools/registry-changed', refreshTools));
-  }
-  setTimeout(refreshTools, 0);
+  if (typeof ctx.on === 'function') handles.push(ctx.on('llm/adapters-updated', () => { runtime.refreshHostCatalog(); }));
   return () => { for (const dispose of handles) { try { dispose(); } catch { /* best effort */ } } };
 }
 
@@ -272,7 +263,7 @@ async function handleRpc(ctx, runtime, endpoint, payload) {
         deployment: runtime.deployment,
         hostModels: catalog,
         directory: runtime.modelDirectory.list(),
-        roles: Object.values(BUILTIN_ROLES).map((role) => ({ id: role.id, description: role.description, writes: Boolean(role.workspace?.write), tools: runtime.filterKnownTools(runtime.snapshot().roles.find((entry) => entry.id === role.id)?.hostTools ?? []) })),
+        roles: Object.values(BUILTIN_ROLES).map((role) => ({ id: role.id, description: role.description, writes: Boolean(role.workspace?.write), tools: runtime.snapshot().roles.find((entry) => entry.id === role.id)?.hostTools ?? [] })),
         categories: Object.entries(TASK_CATEGORIES).map(([id, value]) => ({ id, description: value.description })),
         skills: runtime.skills.list(),
         efforts: EFFORT_LEVELS,
